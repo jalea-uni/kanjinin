@@ -129,7 +129,6 @@ async def evaluate(
     ms = int((time.time()-t0)*1000)
 
     items = [it for it in items if it.get("expected_kanji")]
-
     resp = {
         "session_id": session_id,
         "source": {"type":"image","dpi": dpi, "normalized":"A4"},
