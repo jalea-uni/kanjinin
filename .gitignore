@@ -46,3 +46,8 @@ Thumbs.db
 # Altro
 # ────────────────────────────────────────────────
 model/etlcdb
+
+.venv
+service/.venv
+service/models
+service/sessions
