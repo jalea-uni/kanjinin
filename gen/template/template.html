@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <style>
+        @font-face {
+            font-family: 'Japanese';
+            src: url(data:font/truetype;base64,{{FONT_BASE64}}) format('truetype');
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Japanese', sans-serif;
+            font-size: {{NORMAL_FONT_SIZE}}px;
+            line-height: 1;
+            padding: 30px;
+            background: white;
+        }
+
+        .page {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 0 auto;
+            background: white;
+        }
+
+        .sentence {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-end;
+            margin-bottom: {{LINE_SPACING}}px;
+            gap: {{CHAR_SPACING}}px;
+        }
+
+        .normal-char {
+            font-size: {{NORMAL_FONT_SIZE}}px;
+            line-height: 1;
+            padding: 2px;
+            display: inline-block;
+        }
+
+        .kanji-container {
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0 {{KANJI_SPACING}}px;
+            position: relative;
+        }
+
+        .furigana {
+            font-size: {{FURIGANA_FONT_SIZE}}px;
+            line-height: 1;
+            margin-bottom: 5px;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        .kanji-box {
+            width: {{BOX_SIZE}}px;
+            height: {{BOX_SIZE}}px;
+            border: 2px solid #333;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: white;
+        }
+
+        .normal-char-wrapper {
+            display: inline-flex;
+            align-items: center;
+            height: {{BOX_SIZE}}px;
+            min-height: {{BOX_SIZE}}px;
+        }
+
+        .normal-char {
+            font-size: {{NORMAL_FONT_SIZE}}px;
+            line-height: 1;
+            padding: 2px;
+            display: inline-block;
+        }
+
+        @media print {
+            body {
+                margin: 0;
+                padding: 20px;
+            }
+
+            .page {
+                margin: 0;
+            }
+        }
+
+        @page {
+            size: A4;
+            margin: 20mm;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="page">
+        {{CONTENT}}
+    </div>
+</body>
+</html>

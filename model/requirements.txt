@@ -1,0 +1,17 @@
+# Core ML dependencies
+torch>=1.12
+torchvision
+opencv-python
+scikit-image
+Pillow
+numpy
+tqdm
+opencv-contrib-python
+
+# PDF processing
+pdf2image
+pypdf2
+
+# Additional utilities
+matplotlib
+pandas

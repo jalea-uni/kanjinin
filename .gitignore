@@ -1,0 +1,48 @@
+# ────────────────────────────────────────────────
+# Node / JavaScript
+# ────────────────────────────────────────────────
+gen/node_modules/
+gen/dist/
+gen/build/
+gen/coverage/
+gen/.parcel-cache/
+gen/.next/
+gen/.env
+gen/.env.*             # es. .env.local, .env.production
+
+# ────────────────────────────────────────────────
+# Python
+# ────────────────────────────────────────────────
+model/venv        
+model/env*/
+model/__pycache__/
+model/**/*.py[cod]
+model/.pytest_cache/
+model/*.egg-info/
+model/*.log
+
+# file di grandi dimensioni / output runtime
+model/output/
+model/data/raw/
+model/models/**/*.pth   # se non usi Git LFS
+model/**/*.ckpt
+model/**/*.onnx
+
+# ────────────────────────────────────────────────
+# Editor / IDE
+# ────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*~                      # backup temporanei
+
+# ────────────────────────────────────────────────
+# Sistemi operativi
+# ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ────────────────────────────────────────────────
+# Altro
+# ────────────────────────────────────────────────
+model/etlcdb

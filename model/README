@@ -1,0 +1,52 @@
+# README
+# Kanji Quality Recognition
+
+This repository implements:
+- **Dataset loading** from ETLCDB directories
+- **Model training** (ResNet18-based) for Kanji character recognition
+- **Inference pipeline**: segmentation, recognition & quality assessment via SSIM
+
+
+1. Generate the label map:
+   ```bash
+   python create_label_map.py \
+     --root /var/www/develop/kanjinin/data/etlcdb \
+     --etl-dirs ETL1,ETL2,ETL3,ETL4,ETL5,ETL6,ETL7,ETL8G,ETL9G \
+     --out label_map.json
+   ```
+
+2. Train the model:
+   ```bash
+   python train.py \
+     --data-path /var/www/develop/kanjinin/data/etlcdb \
+     --label-map label_map.json \
+     --etl-dirs ETL1,ETL2,ETL3,ETL4,ETL5,ETL6,ETL7,ETL8G,ETL9G \
+     --img-size 64 \
+     --batch-size 128 \
+     --val-split 0.1 \
+     --epochs 20 \
+     --lr 1e-3 \
+     --pretrained \
+     --save-path best_model.pth
+   ```
+
+3. Run inference:
+   ```bash
+   python infer.py \
+     --model-path best_model.pth \
+     --image-path /path/to/your/img.png \
+     --threshold 0.75 \
+     --font-path /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
+     --img-size 64
+   ```
+
+4. (Optional) Review test set accuracy:
+   ```bash
+   # After training, run accuracy on held-out test data
+   python evaluate.py \
+     --model-path best_model.pth \
+     --data-path /var/www/develop/kanjinin/data/etlcdb \
+     --label-map label_map.json \
+     --etl-dirs ETL1,ETL2,ETL3,ETL4,ETL5,ETL6,ETL7,ETL8G,ETL9G \
+     --img-size 64
+   ```
