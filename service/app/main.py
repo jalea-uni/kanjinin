@@ -1,3 +1,5 @@
+# service/app/main.py
+import base64
 import os, io, json, time, pathlib, uuid
 from typing import Optional, List
 
@@ -11,8 +13,15 @@ from PIL import Image
 from . import schemas
 from .utils import now_session_id, ensure_dir, load_image_fix_exif, try_parse_json
 from .image_pipeline import to_cv, warp_to_a4, deskew, enhance_and_binarize, to_pil
-from .layouts import grid_layout_pixels
 from .evaluator import KanjiEvaluator
+from .box_detector_try0 import detect_kanji_boxes, extract_box_content, is_box_empty
+from .image_normalizer import normalize_image
+
+# -------------------------------------------------------------------
+# CONFIGURAZIONE DEBUG
+# -------------------------------------------------------------------
+ENABLE_DEBUG = True  # Cambia a False per disabilitare debug completo
+DEBUG_SAVE_CROPS = True  # Salva crop individuali
 
 # -------------------------------------------------------------------
 # Paths & app setup
@@ -54,12 +63,24 @@ async def evaluate(
     options: Optional[str] = Form(None, description="JSON options"),
 ):
     """
-    Valuta una pagina di kanji:
-    - doc: immagine (foto/scansione)
-    - kanji_list: JSON array con almeno la chiave 'kanji' o stringa diretta
-    - options: parametri vari (dpi, grid, ecc.)
+    Valuta una pagina di kanji
     """
     t0 = time.time()
+    session_id = now_session_id()
+
+    # ---------------------------------------------------------------
+    # Setup directories
+    # ---------------------------------------------------------------
+    sess_dir = SESS_ROOT / session_id
+    crops_dir = sess_dir / "crops"
+    ensure_dir(crops_dir)
+
+    if ENABLE_DEBUG:
+        debug_dir = sess_dir / "debug"
+        ensure_dir(debug_dir)
+        print(f"\n{'='*60}")
+        print(f"[SESSION {session_id}] INIZIO VALUTAZIONE")
+        print(f"{'='*60}")
 
     # ---------------------------------------------------------------
     # Validazione input
@@ -67,7 +88,6 @@ async def evaluate(
     if doc.content_type not in ("image/jpeg", "image/png"):
         raise HTTPException(400, f"Unsupported content-type: {doc.content_type}")
 
-    # parse JSON inputs
     try:
         expected_list = json.loads(kanji_list)
         if not isinstance(expected_list, list):
@@ -75,74 +95,183 @@ async def evaluate(
     except Exception as e:
         raise HTTPException(400, f"Invalid kanji_list JSON: {e}")
 
+    if ENABLE_DEBUG:
+        print(f"[INPUT] Content-Type: {doc.content_type}")
+        print(f"[INPUT] Expected kanji count: {len(expected_list)}")
+        print(
+            f"[INPUT] Expected kanji: {[k.get('kanji') if isinstance(k, dict) else k for k in expected_list[:5]]}..."
+        )
+
     opts = try_parse_json(options or "{}", default={})
     dpi = int(opts.get("dpi", 300))
-
-    grid = opts.get("grid", {"rows": 6, "cols": 7})
-    rows = int(grid.get("rows", 6))
-    cols = int(grid.get("cols", 7))
-
-    box_mm = float(opts.get("box_mm", 30))
-    gap_mm = float(opts.get("gap_mm", 10))
-    page_margins_mm = opts.get(
-        "page_margins_mm",
-        {"top": 20, "left": 20, "right": 20, "bottom": 20},
-    )
     return_crops = bool(opts.get("return_crops", True))
 
     # ---------------------------------------------------------------
-    # Caricamento & normalizzazione immagine
+    # Caricamento immagine
     # ---------------------------------------------------------------
     raw = await doc.read()
-    img = load_image_fix_exif(raw)  # PIL image
-    img_cv = to_cv(img)  # BGR OpenCV
-    a4 = warp_to_a4(img_cv, dpi=dpi)
-    a4 = deskew(a4, max_angle=3.0)
-    bin_img = enhance_and_binarize(a4)  # immagine binarizzata
+
+    if ENABLE_DEBUG:
+        raw_path = debug_dir / "01_raw_input.png"
+        with open(raw_path, "wb") as f:
+            f.write(raw)
+        print(f"[DEBUG] ✓ RAW salvato: {len(raw)} bytes")
+
+    img = load_image_fix_exif(raw)
+    img_cv = to_cv(img)
+
+    if ENABLE_DEBUG:
+        cv2.imwrite(str(debug_dir / "02_after_to_cv.png"), img_cv)
+        print(f"[DEBUG] ✓ to_cv: shape={img_cv.shape}")
 
     # ---------------------------------------------------------------
-    # Layout griglia (A4, righe/colonne, margini, ecc.)
+    # NORMALIZZAZIONE (deskew automatico)
     # ---------------------------------------------------------------
-    bboxes = grid_layout_pixels(
-        dpi=dpi,
-        rows=rows,
-        cols=cols,
-        page_margins_mm=page_margins_mm,
-        box_mm=box_mm,
-        gap_mm=gap_mm,
+    if ENABLE_DEBUG:
+        print(f"\n[NORMALIZE] Analisi rotazione...")
+
+    img_cv, normalize_info = normalize_image(img_cv, max_rotation=45.0)
+
+    if ENABLE_DEBUG:
+        print(f"[NORMALIZE] Angolo rilevato: {normalize_info['angle_detected']:.1f}°")
+        print(f"[NORMALIZE] Ruotato: {normalize_info['was_rotated']}")
+        if normalize_info["was_rotated"]:
+            cv2.imwrite(str(debug_dir / "02b_after_normalize.png"), img_cv)
+
+    # ---------------------------------------------------------------
+    # RILEVAMENTO 1: SENZA PREPROCESSING
+    # ---------------------------------------------------------------
+    gray_direct = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+
+    if ENABLE_DEBUG:
+        cv2.imwrite(str(debug_dir / "03_gray_direct.png"), gray_direct)
+        print(f"\n[TEST] Rilevamento SENZA preprocessing...")
+
+    bboxes_no_preproc = detect_kanji_boxes(
+        gray_direct,
+        min_area=2000,  # Più basso per trovare box piccoli
+        max_area=100000,  # Più alto per sicurezza
     )
 
-    # ---------------------------------------------------------------
-    # Sessione e cartella crops
-    # ---------------------------------------------------------------
-    session_id = now_session_id()
-    sess_dir = SESS_ROOT / session_id
-    crops_dir = sess_dir / "crops"
-    ensure_dir(crops_dir)
+    if ENABLE_DEBUG:
+        print(f"[TEST] Box trovati: {len(bboxes_no_preproc)}")
+        if len(bboxes_no_preproc) > 0:
+            debug_img = cv2.cvtColor(gray_direct, cv2.COLOR_GRAY2BGR)
+            for idx, (x, y, w, h) in enumerate(bboxes_no_preproc):
+                cv2.rectangle(debug_img, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                cv2.putText(
+                    debug_img,
+                    f"{idx}",
+                    (x + 5, y + 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0),
+                    2,
+                )
+            cv2.imwrite(str(debug_dir / "04_boxes_no_preproc.png"), debug_img)
 
     # ---------------------------------------------------------------
-    # Itera sui box, valuta e costruisci items
+    # RILEVAMENTO 2: CON PREPROCESSING
+    # ---------------------------------------------------------------
+    if ENABLE_DEBUG:
+        print(f"\n[PREPROC] Applicazione warp_to_a4...")
+
+    a4 = warp_to_a4(img_cv, dpi=dpi)
+
+    if ENABLE_DEBUG:
+        cv2.imwrite(str(debug_dir / "05_after_warp_a4.png"), a4)
+        print(f"[PREPROC] Applicazione deskew...")
+
+    a4_deskewed = deskew(a4, max_angle=3.0)
+
+    if ENABLE_DEBUG:
+        cv2.imwrite(str(debug_dir / "06_after_deskew.png"), a4_deskewed)
+
+    gray_preprocessed = cv2.cvtColor(a4_deskewed, cv2.COLOR_BGR2GRAY)
+
+    if ENABLE_DEBUG:
+        cv2.imwrite(str(debug_dir / "07_gray_preprocessed.png"), gray_preprocessed)
+        print(f"\n[TEST] Rilevamento CON preprocessing...")
+
+    bboxes_with_preproc = detect_kanji_boxes(
+        gray_preprocessed, min_area=2000, max_area=100000
+    )
+
+    if ENABLE_DEBUG:
+        print(f"[TEST] Box trovati: {len(bboxes_with_preproc)}")
+        if len(bboxes_with_preproc) > 0:
+            debug_img = cv2.cvtColor(gray_preprocessed, cv2.COLOR_GRAY2BGR)
+            for idx, (x, y, w, h) in enumerate(bboxes_with_preproc):
+                cv2.rectangle(debug_img, (x, y), (x + w, y + h), (255, 0, 0), 3)
+                cv2.putText(
+                    debug_img,
+                    f"{idx}",
+                    (x + 5, y + 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (255, 0, 0),
+                    2,
+                )
+            cv2.imwrite(str(debug_dir / "08_boxes_with_preproc.png"), debug_img)
+
+    # ---------------------------------------------------------------
+    # DECISIONE: USA IL METODO MIGLIORE
+    # ---------------------------------------------------------------
+    if len(bboxes_no_preproc) >= len(bboxes_with_preproc):
+        if ENABLE_DEBUG:
+            print(
+                f"\n[DECISIONE] Uso SENZA preprocessing ({len(bboxes_no_preproc)} box)"
+            )
+
+        bboxes = bboxes_no_preproc
+        # ⚠️ IMPORTANTE: Binarizza l'immagine NON preprocessata
+        bin_img = enhance_and_binarize(img_cv)
+
+        if ENABLE_DEBUG:
+            cv2.imwrite(str(debug_dir / "09_binarized_no_preproc.png"), bin_img)
+
+        use_preprocessed = False
+    else:
+        if ENABLE_DEBUG:
+            print(
+                f"\n[DECISIONE] Uso CON preprocessing ({len(bboxes_with_preproc)} box)"
+            )
+
+        bboxes = bboxes_with_preproc
+        # Binarizza l'immagine preprocessata
+        bin_img = enhance_and_binarize(a4_deskewed)
+
+        if ENABLE_DEBUG:
+            cv2.imwrite(str(debug_dir / "09_binarized_with_preproc.png"), bin_img)
+
+        use_preprocessed = True
+
+    # ---------------------------------------------------------------
+    # ESTRAZIONE E VALUTAZIONE
     # ---------------------------------------------------------------
     items = []
     qualities = []
 
-    H, W = bin_img.shape[:2]
+    if ENABLE_DEBUG:
+        print(f"\n[VALUTAZIONE] Elaborazione {len(bboxes)} box...")
 
     for idx, bbox in enumerate(bboxes):
         x, y, w, h = bbox
 
-        # Bound check
-        x1 = max(0, int(x))
-        y1 = max(0, int(y))
-        x2 = min(W, int(x + w))
-        y2 = min(H, int(y + h))
+        # Estrai contenuto del box
+        crop = extract_box_content(bin_img, bbox, padding=10)
 
-        if x2 <= x1 or y2 <= y1:
+        # Skip se vuoto
+        if crop is None or is_box_empty(crop):
+            if ENABLE_DEBUG:
+                print(f"[BOX {idx}] VUOTO - skip")
             continue
 
-        crop = bin_img[y1:y2, x1:x2].copy()
+        # Salva crop per debug
+        if ENABLE_DEBUG and DEBUG_SAVE_CROPS:
+            cv2.imwrite(str(debug_dir / f"box_{idx:02d}_crop.png"), crop)
 
-        # expected kanji
+        # Expected kanji
         expected_char = None
         if idx < len(expected_list):
             item = expected_list[idx]
@@ -151,31 +280,38 @@ async def evaluate(
             elif isinstance(item, str):
                 expected_char = item
 
-        # model prediction + quality metric
+        # Model prediction
         pred_char, conf = evaluator.predict(crop)
         q = evaluator.quality(crop)
         qualities.append(q)
 
+        # Assets per frontend
         assets = None
         if return_crops:
-            crop_name = f"p1-b{idx+1:02d}.png"
-            crop_path = crops_dir / crop_name
-            cv2.imwrite(str(crop_path), crop)  # binarized crop
+            crop_name_final = f"p1-b{idx+1:02d}.png"
+            crop_path = crops_dir / crop_name_final
+            cv2.imwrite(str(crop_path), crop)
+            _, buffer = cv2.imencode('.png', crop)
+            crop_base64 = base64.b64encode(buffer).decode('utf-8')
             assets = {
                 "crop_relpath": str(
-                    pathlib.Path("sessions") / session_id / "crops" / crop_name
-                )
+                    pathlib.Path("sessions") / session_id / "crops" / crop_name_final
+                ),
+                "crop_base64": crop_base64
             }
 
-        # DEBUG opzionale
-        # print(f"[EVAL] box {idx} expected={expected_char!r} pred={pred_char!r} conf={conf:.3f}")
+        # Log risultato
+        if ENABLE_DEBUG:
+            status = "✓" if pred_char == expected_char else "✗"
+            print(
+                f"[BOX {idx}] {status} expected={expected_char!r} predicted={pred_char!r} conf={conf:.2f}"
+            )
 
-        print (pred_char)
         items.append(
             {
                 "id": f"p1-b{idx+1:02d}",
                 "page": 1,
-                "bbox": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
+                "bbox": [int(x), int(y), int(w), int(h)],
                 "expected_kanji": expected_char,
                 "predicted_kanji": pred_char,
                 "confidence": conf,
@@ -186,13 +322,12 @@ async def evaluate(
         )
 
     # ---------------------------------------------------------------
-    # Statistiche / summary (solo box con kanji atteso)
+    # SUMMARY
     # ---------------------------------------------------------------
     ms = int((time.time() - t0) * 1000)
 
-    # Tieni solo i box che hanno effettivamente un kanji atteso
+    # Filtra solo box con kanji atteso
     items = [it for it in items if it.get("expected_kanji")]
-
     total = len(items)
 
     if total > 0:
@@ -210,11 +345,23 @@ async def evaluate(
         acc = None
         avg_q = None
 
+    if ENABLE_DEBUG:
+        print(f"\n{'='*60}")
+        print(f"[SUMMARY] Box valutati: {total}")
+        print(f"[SUMMARY] Match corretti: {matched}/{total}")
+        print(f"[SUMMARY] Accuracy: {acc*100 if acc else 0:.1f}%")
+        print(f"[SUMMARY] Tempo: {ms}ms")
+        print(f"[SUMMARY] Debug: {debug_dir}")
+        print(f"{'='*60}\n")
+
     resp = {
         "session_id": session_id,
-        "source": {"type": "image", "dpi": dpi, "normalized": "A4"},
+        "source": {
+            "type": "image",
+            "dpi": dpi,
+            "normalized": "A4" if use_preprocessed else "direct",
+        },
         "summary": {
-            # ⚠️ ora conta SOLO i riquadri con kanji atteso
             "total_boxes": total,
             "matched": matched,
             "accuracy_top1": acc,

@@ -62,14 +62,29 @@ def deskew(img_cv: np.ndarray, max_angle: float = 3.0):
     M = cv2.getRotationMatrix2D((w//2, h//2), angle, 1.0)
     return cv2.warpAffine(img_cv, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
-def enhance_and_binarize(img_cv: np.ndarray):
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-    # CLAHE
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    gray = clahe.apply(gray)
+
+def enhance_and_binarize(img: np.ndarray) -> np.ndarray:
+    """
+    Binarizza con ADAPTIVE threshold
+    Output: kanji NERI su sfondo BIANCO (come ETL dataset)
+    """
+    if img.ndim == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img.copy()
+
     # Adaptive threshold
-    bin_img = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                    cv2.THRESH_BINARY_INV, 35, 10)
-    # Denoise leggero
-    bin_img = cv2.medianBlur(bin_img, 3)
-    return bin_img
+    binary = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 5  # NON _INV!
+    )
+
+    # ⚠️ VERIFICA: Se l'immagine ha più pixel neri che bianchi,
+    # significa che è invertita → inverti
+    black_pixels = np.sum(binary == 0)
+    white_pixels = np.sum(binary == 255)
+
+    if black_pixels > white_pixels:
+        # Invertita! Correggi
+        binary = cv2.bitwise_not(binary)
+
+    return binary
